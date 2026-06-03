@@ -38,7 +38,6 @@ FEATURES = [
     "Trihalomethanes", "Turbidity"
 ]
 
-# Normes OMS pour chaque paramètre [min_ok, max_ok]
 WHO_NORMS = {
     "ph":               (6.5,  8.5),
     "Hardness":         (0,    300),
@@ -63,7 +62,6 @@ DESCRIPTIONS = {
     "Turbidity":        "Turbidité en NTU (max 4 OMS)",
 }
 
-# Valeurs typiques du dataset (médiane) pour les sliders
 TYPICAL_VALUES = {
     "ph": 7.08, "Hardness": 196.4, "Solids": 20927.0,
     "Chloramines": 7.12, "Sulfate": 333.8, "Conductivity": 426.2,
@@ -81,6 +79,34 @@ SLIDER_RANGES = {
     "Trihalomethanes":  (0.0,   130.0, 0.1),
     "Turbidity":        (0.0,   10.0,  0.01),
 }
+
+# ─────────────────────────────────────────
+# MODÈLES QUI NÉCESSITENT LE SCALING
+# ─────────────────────────────────────────
+# ✅ FIX 1 : liste étendue — si le meilleur modèle change (SVM, LR, Ensemble Voting),
+# le scaling est appliqué correctement.
+MODELS_NEEDING_SCALING = ["Logistic Regression", "SVM", "Ensemble Voting"]
+
+# ─────────────────────────────────────────
+# HELPER SHAP — compatibilité toutes versions
+# ─────────────────────────────────────────
+def extract_shap_values_class1(shap_output):
+    """
+    ✅ FIX 2 : extrait les valeurs SHAP pour la classe 1 (potable),
+    quelle que soit la version de SHAP :
+    - Ancienne API : liste [classe0, classe1] → shape (n, 9) chacun
+    - Nouvelle API : array 3D              → shape (n, 9, 2)
+    - XGBoost récent : array 2D            → shape (n, 9)
+    """
+    if isinstance(shap_output, list):
+        # Ancienne API : liste de 2 arrays
+        return shap_output[1]
+    arr = np.array(shap_output)
+    if arr.ndim == 3:
+        # Nouvelle API 3D : (n_samples, n_features, n_classes)
+        return arr[:, :, 1]
+    # Array 2D : déjà les valeurs pour la classe cible
+    return arr
 
 # ─────────────────────────────────────────
 # INTERFACE
@@ -120,8 +146,14 @@ predict_btn = st.sidebar.button("🔍 Analyser l'échantillon", type="primary", 
 # ─────────────────────────────────────────
 if predict_btn:
     X_input = pd.DataFrame([input_values])
-    needs_scaling = model_name in ["Logistic Regression", "SVM"]
-    X_scaled = scaler.transform(X_input) if needs_scaling else X_input.values
+    needs_scaling = model_name in MODELS_NEEDING_SCALING
+
+    # ✅ FIX 3 : toujours passer un DataFrame avec noms de colonnes au modèle
+    # Évite le warning "X does not have valid feature names"
+    if needs_scaling:
+        X_scaled = pd.DataFrame(scaler.transform(X_input), columns=FEATURES)
+    else:
+        X_scaled = X_input.copy()
 
     prob = model.predict_proba(X_scaled)[0][1]
     prediction = int(prob >= threshold)
@@ -175,25 +207,24 @@ if predict_btn:
     st.subheader("🧠 Explication de la décision (SHAP)")
 
     try:
-        X_input_df = pd.DataFrame(X_scaled, columns=FEATURES)
-
-        if model_name in ["Random Forest", "XGBoost"]:
+        if model_name in ["Random Forest", "XGBoost", "Gradient Boosting"]:
             explainer = shap.TreeExplainer(model)
-            shap_vals = explainer.shap_values(X_input_df)
-            if isinstance(shap_vals, list):
-                sv = shap_vals[1][0]
-            else:
-                sv = shap_vals[0]
+            shap_output = explainer.shap_values(X_scaled)
+            # ✅ FIX 2 appliqué : extraction robuste quelle que soit la version SHAP
+            shap_matrix = extract_shap_values_class1(shap_output)
+            sv = shap_matrix[0]  # 1 seul échantillon → on prend la première ligne
         else:
-            # Charger un background depuis le dataset
             df_bg = pd.read_csv("water_potability_clean.csv").drop("Potability", axis=1)
-            X_bg = scaler.transform(df_bg) if needs_scaling else df_bg.values
-            X_bg_df = pd.DataFrame(X_bg[:100], columns=FEATURES)
-            explainer = shap.KernelExplainer(model.predict_proba, X_bg_df)
-            shap_vals = explainer.shap_values(X_input_df)
-            sv = shap_vals[1][0]
+            if needs_scaling:
+                X_bg = pd.DataFrame(scaler.transform(df_bg), columns=FEATURES)
+            else:
+                X_bg = df_bg.copy()
+            explainer = shap.KernelExplainer(model.predict_proba, X_bg[:100])
+            shap_output = explainer.shap_values(X_scaled)
+            shap_matrix = extract_shap_values_class1(shap_output)
+            sv = shap_matrix[0]
 
-        # Waterfall
+        # Graphique waterfall
         fig, ax = plt.subplots(figsize=(9, 4))
         colors = ["tomato" if v > 0 else "steelblue" for v in sv]
         bars = ax.barh(FEATURES, sv, color=colors)
@@ -201,8 +232,14 @@ if predict_btn:
         ax.set_xlabel("Contribution SHAP (+ = vers potable)")
         ax.set_title("Contribution de chaque paramètre à la décision")
         for bar, val in zip(bars, sv):
-            ax.text(val + (0.001 if val >= 0 else -0.001), bar.get_y() + bar.get_height() / 2,
-                    f"{val:.3f}", va="center", ha="left" if val >= 0 else "right", fontsize=8)
+            ax.text(
+                val + (0.001 if val >= 0 else -0.001),
+                bar.get_y() + bar.get_height() / 2,
+                f"{val:.3f}",
+                va="center",
+                ha="left" if val >= 0 else "right",
+                fontsize=8
+            )
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
@@ -218,8 +255,11 @@ if predict_btn:
         "Valeur": [input_values[f] for f in FEATURES],
         "Norme OMS min": [WHO_NORMS[f][0] for f in FEATURES],
         "Norme OMS max": [WHO_NORMS[f][1] for f in FEATURES],
-        "Statut": ["🔴 Hors norme" if (input_values[f] < WHO_NORMS[f][0] or input_values[f] > WHO_NORMS[f][1])
-                   else "🟢 Conforme" for f in FEATURES]
+        "Statut": [
+            "🔴 Hors norme" if (input_values[f] < WHO_NORMS[f][0] or input_values[f] > WHO_NORMS[f][1])
+            else "🟢 Conforme"
+            for f in FEATURES
+        ]
     })
     st.dataframe(recap, use_container_width=True)
 
