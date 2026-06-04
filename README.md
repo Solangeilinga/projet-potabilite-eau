@@ -52,7 +52,7 @@ python 3_optimization.py
 ```bash
 streamlit run app.py
 ```
-→ Ouvre l'application dans le navigateur sur http://localhost:8501
+→ Ouvre l'application sur https://projet-potabilite-eau-667gnpnfdko4imxs5vgx8a.streamlit.app/
 
 ## Ce que fait chaque étape
 
