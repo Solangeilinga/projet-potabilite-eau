@@ -63,9 +63,3 @@ streamlit run app.py
 | Optimisation | `3_optimization.py` | Seuil optimal, SHAP features importance, CV 5-fold |
 | Application | `app.py` | Interface Streamlit terrain |
 
-## Livrables du projet
-
-- ✅ Modèle de classification calibré avec seuil asymétrique
-- ✅ Application Streamlit : saisie des 9 paramètres → verdict + paramètres hors-norme en rouge
-- ✅ Interprétabilité SHAP (features les plus critiques)
-- ✅ Validation croisée 5-fold stratifiée
